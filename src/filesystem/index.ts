@@ -2,6 +2,8 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import express, { Request, Response } from "express";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -815,10 +817,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Start server
 async function runServer() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Secure MCP Filesystem Server running on stdio");
-  console.error("Allowed directories:", allowedDirectories);
+  // Check if we should run in HTTP mode
+  const useHttp = process.env.USE_HTTP === "true";
+
+  if (useHttp) {
+    // Start HTTP server
+    const app = express();
+    let transport: SSEServerTransport;
+
+    app.get("/sse", async (req: Request, res: Response) => {
+      console.error("Received SSE connection");
+      transport = new SSEServerTransport("/message", res);
+      await server.connect(transport);
+    });
+
+    app.post("/message", async (req: Request, res: Response) => {
+      console.error("Received message");
+      await transport.handlePostMessage(req, res);
+    });
+
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, () => {
+      console.error(
+        `Secure MCP Filesystem Server running on HTTP port ${PORT}`
+      );
+      console.error("Allowed directories:", allowedDirectories);
+    });
+  } else {
+    // Start stdio server (original behavior)
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error("Secure MCP Filesystem Server running on stdio");
+    console.error("Allowed directories:", allowedDirectories);
+  }
 }
 
 runServer().catch((error) => {

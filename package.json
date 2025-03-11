@@ -16,7 +16,8 @@
     "build": "pnpm -r run build",
     "watch": "pnpm -r run watch",
     "publish-all": "pnpm -r publish --access public",
-    "link-all": "pnpm -r link"
+    "link-all": "pnpm -r link",
+    "test:filesystem": "cd src/genkit-client && npx tsc && node dist/examples/filesystem-ls.js"
   },
   "dependencies": {
     "@modelcontextprotocol/server-brave-search": "*",
