@@ -13,21 +13,26 @@
   ],
   "files": [],
   "scripts": {
-    "build": "npm run build --workspaces",
-    "watch": "npm run watch --workspaces",
-    "publish-all": "npm publish --workspaces --access public",
-    "link-all": "npm link --workspaces"
+    "build": "pnpm -r run build",
+    "watch": "pnpm -r run watch",
+    "publish-all": "pnpm -r publish --access public",
+    "link-all": "pnpm -r link"
   },
   "dependencies": {
+    "@modelcontextprotocol/server-brave-search": "*",
+    "@modelcontextprotocol/server-everart": "*",
     "@modelcontextprotocol/server-everything": "*",
+    "@modelcontextprotocol/server-filesystem": "*",
     "@modelcontextprotocol/server-gdrive": "*",
+    "@modelcontextprotocol/server-memory": "*",
     "@modelcontextprotocol/server-postgres": "*",
     "@modelcontextprotocol/server-puppeteer": "*",
-    "@modelcontextprotocol/server-slack": "*",
-    "@modelcontextprotocol/server-brave-search": "*",
-    "@modelcontextprotocol/server-memory": "*",
-    "@modelcontextprotocol/server-filesystem": "*",
-    "@modelcontextprotocol/server-everart": "*",
-    "@modelcontextprotocol/server-sequential-thinking": "*"
+    "@modelcontextprotocol/server-sequential-thinking": "*",
+    "@modelcontextprotocol/server-slack": "*"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "puppeteer"
+    ]
   }
 }
