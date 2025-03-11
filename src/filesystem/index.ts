@@ -9,16 +9,22 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import fs from "fs/promises";
 import path from "path";
-import os from 'os';
+import os from "os";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import { diffLines, createTwoFilesPatch } from 'diff';
-import { minimatch } from 'minimatch';
+import { diffLines, createTwoFilesPatch } from "diff";
+import { minimatch } from "minimatch";
+import { exec } from "child_process";
+import { promisify } from "util";
+
+const execPromise = promisify(exec);
 
 // Command line argument parsing
 const args = process.argv.slice(2);
 if (args.length === 0) {
-  console.error("Usage: mcp-server-filesystem <allowed-directory> [additional-directories...]");
+  console.error(
+    "Usage: mcp-server-filesystem <allowed-directory> [additional-directories...]"
+  );
   process.exit(1);
 }
 
@@ -28,30 +34,32 @@ function normalizePath(p: string): string {
 }
 
 function expandHome(filepath: string): string {
-  if (filepath.startsWith('~/') || filepath === '~') {
+  if (filepath.startsWith("~/") || filepath === "~") {
     return path.join(os.homedir(), filepath.slice(1));
   }
   return filepath;
 }
 
 // Store allowed directories in normalized form
-const allowedDirectories = args.map(dir =>
+const allowedDirectories = args.map((dir) =>
   normalizePath(path.resolve(expandHome(dir)))
 );
 
 // Validate that all directories exist and are accessible
-await Promise.all(args.map(async (dir) => {
-  try {
-    const stats = await fs.stat(dir);
-    if (!stats.isDirectory()) {
-      console.error(`Error: ${dir} is not a directory`);
+await Promise.all(
+  args.map(async (dir) => {
+    try {
+      const stats = await fs.stat(dir);
+      if (!stats.isDirectory()) {
+        console.error(`Error: ${dir} is not a directory`);
+        process.exit(1);
+      }
+    } catch (error) {
+      console.error(`Error accessing directory ${dir}:`, error);
       process.exit(1);
     }
-  } catch (error) {
-    console.error(`Error accessing directory ${dir}:`, error);
-    process.exit(1);
-  }
-}));
+  })
+);
 
 // Security utilities
 async function validatePath(requestedPath: string): Promise<string> {
@@ -63,18 +71,28 @@ async function validatePath(requestedPath: string): Promise<string> {
   const normalizedRequested = normalizePath(absolute);
 
   // Check if path is within allowed directories
-  const isAllowed = allowedDirectories.some(dir => normalizedRequested.startsWith(dir));
+  const isAllowed = allowedDirectories.some((dir) =>
+    normalizedRequested.startsWith(dir)
+  );
   if (!isAllowed) {
-    throw new Error(`Access denied - path outside allowed directories: ${absolute} not in ${allowedDirectories.join(', ')}`);
+    throw new Error(
+      `Access denied - path outside allowed directories: ${absolute} not in ${allowedDirectories.join(
+        ", "
+      )}`
+    );
   }
 
   // Handle symlinks by checking their real path
   try {
     const realPath = await fs.realpath(absolute);
     const normalizedReal = normalizePath(realPath);
-    const isRealPathAllowed = allowedDirectories.some(dir => normalizedReal.startsWith(dir));
+    const isRealPathAllowed = allowedDirectories.some((dir) =>
+      normalizedReal.startsWith(dir)
+    );
     if (!isRealPathAllowed) {
-      throw new Error("Access denied - symlink target outside allowed directories");
+      throw new Error(
+        "Access denied - symlink target outside allowed directories"
+      );
     }
     return realPath;
   } catch (error) {
@@ -83,9 +101,13 @@ async function validatePath(requestedPath: string): Promise<string> {
     try {
       const realParentPath = await fs.realpath(parentDir);
       const normalizedParent = normalizePath(realParentPath);
-      const isParentAllowed = allowedDirectories.some(dir => normalizedParent.startsWith(dir));
+      const isParentAllowed = allowedDirectories.some((dir) =>
+        normalizedParent.startsWith(dir)
+      );
       if (!isParentAllowed) {
-        throw new Error("Access denied - parent directory outside allowed directories");
+        throw new Error(
+          "Access denied - parent directory outside allowed directories"
+        );
       }
       return absolute;
     } catch {
@@ -109,14 +131,27 @@ const WriteFileArgsSchema = z.object({
 });
 
 const EditOperation = z.object({
-  oldText: z.string().describe('Text to search for - must match exactly'),
-  newText: z.string().describe('Text to replace with')
+  oldText: z.string().describe("Text to search for - must match exactly"),
+  newText: z.string().describe("Text to replace with"),
 });
 
 const EditFileArgsSchema = z.object({
   path: z.string(),
   edits: z.array(EditOperation),
-  dryRun: z.boolean().default(false).describe('Preview changes using git-style diff format')
+  dryRun: z
+    .boolean()
+    .default(false)
+    .describe("Preview changes using git-style diff format"),
+});
+
+const ExecuteFileArgsSchema = z.object({
+  path: z.string(),
+  args: z.array(z.string()).optional().default([]),
+  timeout: z
+    .number()
+    .optional()
+    .default(30000)
+    .describe("Timeout in milliseconds"),
 });
 
 const CreateDirectoryArgsSchema = z.object({
@@ -139,7 +174,7 @@ const MoveFileArgsSchema = z.object({
 const SearchFilesArgsSchema = z.object({
   path: z.string(),
   pattern: z.string(),
-  excludePatterns: z.array(z.string()).optional().default([])
+  excludePatterns: z.array(z.string()).optional().default([]),
 });
 
 const GetFileInfoArgsSchema = z.object({
@@ -169,7 +204,7 @@ const server = new Server(
     capabilities: {
       tools: {},
     },
-  },
+  }
 );
 
 // Tool implementations
@@ -205,8 +240,10 @@ async function searchFiles(
 
         // Check if path matches any exclude pattern
         const relativePath = path.relative(rootPath, fullPath);
-        const shouldExclude = excludePatterns.some(pattern => {
-          const globPattern = pattern.includes('*') ? pattern : `**/${pattern}/**`;
+        const shouldExclude = excludePatterns.some((pattern) => {
+          const globPattern = pattern.includes("*")
+            ? pattern
+            : `**/${pattern}/**`;
           return minimatch(relativePath, globPattern, { dot: true });
         });
 
@@ -234,10 +271,14 @@ async function searchFiles(
 
 // file editing and diffing utilities
 function normalizeLineEndings(text: string): string {
-  return text.replace(/\r\n/g, '\n');
+  return text.replace(/\r\n/g, "\n");
 }
 
-function createUnifiedDiff(originalContent: string, newContent: string, filepath: string = 'file'): string {
+function createUnifiedDiff(
+  originalContent: string,
+  newContent: string,
+  filepath: string = "file"
+): string {
   // Ensure consistent line endings for diff
   const normalizedOriginal = normalizeLineEndings(originalContent);
   const normalizedNew = normalizeLineEndings(newContent);
@@ -247,18 +288,18 @@ function createUnifiedDiff(originalContent: string, newContent: string, filepath
     filepath,
     normalizedOriginal,
     normalizedNew,
-    'original',
-    'modified'
+    "original",
+    "modified"
   );
 }
 
 async function applyFileEdits(
   filePath: string,
-  edits: Array<{oldText: string, newText: string}>,
+  edits: Array<{ oldText: string; newText: string }>,
   dryRun = false
 ): Promise<string> {
   // Read file content and normalize line endings
-  const content = normalizeLineEndings(await fs.readFile(filePath, 'utf-8'));
+  const content = normalizeLineEndings(await fs.readFile(filePath, "utf-8"));
 
   // Apply edits sequentially
   let modifiedContent = content;
@@ -273,8 +314,8 @@ async function applyFileEdits(
     }
 
     // Otherwise, try line-by-line matching with flexibility for whitespace
-    const oldLines = normalizedOld.split('\n');
-    const contentLines = modifiedContent.split('\n');
+    const oldLines = normalizedOld.split("\n");
+    const contentLines = modifiedContent.split("\n");
     let matchFound = false;
 
     for (let i = 0; i <= contentLines.length - oldLines.length; i++) {
@@ -288,21 +329,25 @@ async function applyFileEdits(
 
       if (isMatch) {
         // Preserve original indentation of first line
-        const originalIndent = contentLines[i].match(/^\s*/)?.[0] || '';
-        const newLines = normalizedNew.split('\n').map((line, j) => {
+        const originalIndent = contentLines[i].match(/^\s*/)?.[0] || "";
+        const newLines = normalizedNew.split("\n").map((line, j) => {
           if (j === 0) return originalIndent + line.trimStart();
           // For subsequent lines, try to preserve relative indentation
-          const oldIndent = oldLines[j]?.match(/^\s*/)?.[0] || '';
-          const newIndent = line.match(/^\s*/)?.[0] || '';
+          const oldIndent = oldLines[j]?.match(/^\s*/)?.[0] || "";
+          const newIndent = line.match(/^\s*/)?.[0] || "";
           if (oldIndent && newIndent) {
             const relativeIndent = newIndent.length - oldIndent.length;
-            return originalIndent + ' '.repeat(Math.max(0, relativeIndent)) + line.trimStart();
+            return (
+              originalIndent +
+              " ".repeat(Math.max(0, relativeIndent)) +
+              line.trimStart()
+            );
           }
           return line;
         });
 
         contentLines.splice(i, oldLines.length, ...newLines);
-        modifiedContent = contentLines.join('\n');
+        modifiedContent = contentLines.join("\n");
         matchFound = true;
         break;
       }
@@ -318,13 +363,15 @@ async function applyFileEdits(
 
   // Format diff with appropriate number of backticks
   let numBackticks = 3;
-  while (diff.includes('`'.repeat(numBackticks))) {
+  while (diff.includes("`".repeat(numBackticks))) {
     numBackticks++;
   }
-  const formattedDiff = `${'`'.repeat(numBackticks)}diff\n${diff}${'`'.repeat(numBackticks)}\n\n`;
+  const formattedDiff = `${"`".repeat(numBackticks)}diff\n${diff}${"`".repeat(
+    numBackticks
+  )}\n\n`;
 
   if (!dryRun) {
-    await fs.writeFile(filePath, modifiedContent, 'utf-8');
+    await fs.writeFile(filePath, modifiedContent, "utf-8");
   }
 
   return formattedDiff;
@@ -390,10 +437,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "directory_tree",
         description:
-            "Get a recursive tree view of files and directories as a JSON structure. " +
-            "Each entry includes 'name', 'type' (file/directory), and 'children' for directories. " +
-            "Files have no children array, while directories always have a children array (which may be empty). " +
-            "The output is formatted with 2-space indentation for readability. Only works within allowed directories.",
+          "Get a recursive tree view of files and directories as a JSON structure. " +
+          "Each entry includes 'name', 'type' (file/directory), and 'children' for directories. " +
+          "Files have no children array, while directories always have a children array (which may be empty). " +
+          "The output is formatted with 2-space indentation for readability. Only works within allowed directories.",
         inputSchema: zodToJsonSchema(DirectoryTreeArgsSchema) as ToolInput,
       },
       {
@@ -435,10 +482,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: [],
         },
       },
+      {
+        name: "execute_file",
+        description:
+          "Execute a file with optional arguments. Returns the standard output and error from the execution. " +
+          "The file must be executable and within allowed directories. Useful for running scripts or programs. " +
+          "A timeout can be specified to limit execution time.",
+        inputSchema: zodToJsonSchema(ExecuteFileArgsSchema) as ToolInput,
+      },
     ],
   };
 });
-
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
@@ -460,7 +514,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "read_multiple_files": {
         const parsed = ReadMultipleFilesArgsSchema.safeParse(args);
         if (!parsed.success) {
-          throw new Error(`Invalid arguments for read_multiple_files: ${parsed.error}`);
+          throw new Error(
+            `Invalid arguments for read_multiple_files: ${parsed.error}`
+          );
         }
         const results = await Promise.all(
           parsed.data.paths.map(async (filePath: string) => {
@@ -469,10 +525,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               const content = await fs.readFile(validPath, "utf-8");
               return `${filePath}:\n${content}\n`;
             } catch (error) {
-              const errorMessage = error instanceof Error ? error.message : String(error);
+              const errorMessage =
+                error instanceof Error ? error.message : String(error);
               return `${filePath}: Error - ${errorMessage}`;
             }
-          }),
+          })
         );
         return {
           content: [{ type: "text", text: results.join("\n---\n") }],
@@ -487,7 +544,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const validPath = await validatePath(parsed.data.path);
         await fs.writeFile(validPath, parsed.data.content, "utf-8");
         return {
-          content: [{ type: "text", text: `Successfully wrote to ${parsed.data.path}` }],
+          content: [
+            { type: "text", text: `Successfully wrote to ${parsed.data.path}` },
+          ],
         };
       }
 
@@ -497,7 +556,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new Error(`Invalid arguments for edit_file: ${parsed.error}`);
         }
         const validPath = await validatePath(parsed.data.path);
-        const result = await applyFileEdits(validPath, parsed.data.edits, parsed.data.dryRun);
+        const result = await applyFileEdits(
+          validPath,
+          parsed.data.edits,
+          parsed.data.dryRun
+        );
         return {
           content: [{ type: "text", text: result }],
         };
@@ -506,72 +569,88 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "create_directory": {
         const parsed = CreateDirectoryArgsSchema.safeParse(args);
         if (!parsed.success) {
-          throw new Error(`Invalid arguments for create_directory: ${parsed.error}`);
+          throw new Error(
+            `Invalid arguments for create_directory: ${parsed.error}`
+          );
         }
         const validPath = await validatePath(parsed.data.path);
         await fs.mkdir(validPath, { recursive: true });
         return {
-          content: [{ type: "text", text: `Successfully created directory ${parsed.data.path}` }],
+          content: [
+            {
+              type: "text",
+              text: `Successfully created directory ${parsed.data.path}`,
+            },
+          ],
         };
       }
 
       case "list_directory": {
         const parsed = ListDirectoryArgsSchema.safeParse(args);
         if (!parsed.success) {
-          throw new Error(`Invalid arguments for list_directory: ${parsed.error}`);
+          throw new Error(
+            `Invalid arguments for list_directory: ${parsed.error}`
+          );
         }
         const validPath = await validatePath(parsed.data.path);
         const entries = await fs.readdir(validPath, { withFileTypes: true });
         const formatted = entries
-          .map((entry) => `${entry.isDirectory() ? "[DIR]" : "[FILE]"} ${entry.name}`)
+          .map(
+            (entry) =>
+              `${entry.isDirectory() ? "[DIR]" : "[FILE]"} ${entry.name}`
+          )
           .join("\n");
         return {
           content: [{ type: "text", text: formatted }],
         };
       }
 
-        case "directory_tree": {
-            const parsed = DirectoryTreeArgsSchema.safeParse(args);
-            if (!parsed.success) {
-                throw new Error(`Invalid arguments for directory_tree: ${parsed.error}`);
-            }
-
-            interface TreeEntry {
-                name: string;
-                type: 'file' | 'directory';
-                children?: TreeEntry[];
-            }
-
-            async function buildTree(currentPath: string): Promise<TreeEntry[]> {
-                const validPath = await validatePath(currentPath);
-                const entries = await fs.readdir(validPath, {withFileTypes: true});
-                const result: TreeEntry[] = [];
-
-                for (const entry of entries) {
-                    const entryData: TreeEntry = {
-                        name: entry.name,
-                        type: entry.isDirectory() ? 'directory' : 'file'
-                    };
-
-                    if (entry.isDirectory()) {
-                        const subPath = path.join(currentPath, entry.name);
-                        entryData.children = await buildTree(subPath);
-                    }
-
-                    result.push(entryData);
-                }
-
-                return result;
-            }
-
-            const treeData = await buildTree(parsed.data.path);
-            return {
-                content: [{
-                    type: "text",
-                    text: JSON.stringify(treeData, null, 2)
-                }],
-            };
+      case "directory_tree": {
+        const parsed = DirectoryTreeArgsSchema.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(
+            `Invalid arguments for directory_tree: ${parsed.error}`
+          );
         }
+
+        interface TreeEntry {
+          name: string;
+          type: "file" | "directory";
+          children?: TreeEntry[];
+        }
+
+        async function buildTree(currentPath: string): Promise<TreeEntry[]> {
+          const validPath = await validatePath(currentPath);
+          const entries = await fs.readdir(validPath, { withFileTypes: true });
+          const result: TreeEntry[] = [];
+
+          for (const entry of entries) {
+            const entryData: TreeEntry = {
+              name: entry.name,
+              type: entry.isDirectory() ? "directory" : "file",
+            };
+
+            if (entry.isDirectory()) {
+              const subPath = path.join(currentPath, entry.name);
+              entryData.children = await buildTree(subPath);
+            }
+
+            result.push(entryData);
+          }
+
+          return result;
+        }
+
+        const treeData = await buildTree(parsed.data.path);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(treeData, null, 2),
+            },
+          ],
+        };
+      }
 
       case "move_file": {
         const parsed = MoveFileArgsSchema.safeParse(args);
@@ -582,43 +661,144 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const validDestPath = await validatePath(parsed.data.destination);
         await fs.rename(validSourcePath, validDestPath);
         return {
-          content: [{ type: "text", text: `Successfully moved ${parsed.data.source} to ${parsed.data.destination}` }],
+          content: [
+            {
+              type: "text",
+              text: `Successfully moved ${parsed.data.source} to ${parsed.data.destination}`,
+            },
+          ],
         };
       }
 
       case "search_files": {
         const parsed = SearchFilesArgsSchema.safeParse(args);
         if (!parsed.success) {
-          throw new Error(`Invalid arguments for search_files: ${parsed.error}`);
+          throw new Error(
+            `Invalid arguments for search_files: ${parsed.error}`
+          );
         }
         const validPath = await validatePath(parsed.data.path);
-        const results = await searchFiles(validPath, parsed.data.pattern, parsed.data.excludePatterns);
+        const results = await searchFiles(
+          validPath,
+          parsed.data.pattern,
+          parsed.data.excludePatterns
+        );
         return {
-          content: [{ type: "text", text: results.length > 0 ? results.join("\n") : "No matches found" }],
+          content: [
+            {
+              type: "text",
+              text:
+                results.length > 0 ? results.join("\n") : "No matches found",
+            },
+          ],
         };
       }
 
       case "get_file_info": {
         const parsed = GetFileInfoArgsSchema.safeParse(args);
         if (!parsed.success) {
-          throw new Error(`Invalid arguments for get_file_info: ${parsed.error}`);
+          throw new Error(
+            `Invalid arguments for get_file_info: ${parsed.error}`
+          );
         }
         const validPath = await validatePath(parsed.data.path);
         const info = await getFileStats(validPath);
         return {
-          content: [{ type: "text", text: Object.entries(info)
-            .map(([key, value]) => `${key}: ${value}`)
-            .join("\n") }],
+          content: [
+            {
+              type: "text",
+              text: Object.entries(info)
+                .map(([key, value]) => `${key}: ${value}`)
+                .join("\n"),
+            },
+          ],
         };
       }
 
       case "list_allowed_directories": {
         return {
-          content: [{
-            type: "text",
-            text: `Allowed directories:\n${allowedDirectories.join('\n')}`
-          }],
+          content: [
+            {
+              type: "text",
+              text: `Allowed directories:\n${allowedDirectories.join("\n")}`,
+            },
+          ],
         };
+      }
+
+      case "execute_file": {
+        const parsed = ExecuteFileArgsSchema.safeParse(args);
+        if (!parsed.success) {
+          throw new Error(
+            `Invalid arguments for execute_file: ${parsed.error}`
+          );
+        }
+        const validPath = await validatePath(parsed.data.path);
+
+        // Check if file exists and is executable
+        try {
+          const stats = await fs.stat(validPath);
+          if (!stats.isFile()) {
+            throw new Error(`${parsed.data.path} is not a file`);
+          }
+
+          // Check if file is executable (Unix-like systems)
+          // On Windows, this check is less relevant
+          if (process.platform !== "win32") {
+            const mode = stats.mode;
+            const isExecutable = !!(mode & 0o111); // Check if any execute bit is set
+            if (!isExecutable) {
+              throw new Error(`${parsed.data.path} is not executable`);
+            }
+          }
+        } catch (error) {
+          if (error instanceof Error) {
+            throw error;
+          }
+          throw new Error(`Error accessing file ${parsed.data.path}`);
+        }
+
+        try {
+          // Execute the file with the provided arguments
+          const cmdArgs = parsed.data.args.join(" ");
+          const { stdout, stderr } = await execPromise(
+            `"${validPath}" ${cmdArgs}`,
+            {
+              timeout: parsed.data.timeout,
+              maxBuffer: 1024 * 1024, // 1MB buffer
+            }
+          );
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Execution completed:\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`,
+              },
+            ],
+          };
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          const stderr =
+            error instanceof Error && "stderr" in error
+              ? (error as any).stderr
+              : "";
+          const stdout =
+            error instanceof Error && "stdout" in error
+              ? (error as any).stdout
+              : "";
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Execution failed: ${errorMessage}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`,
+              },
+            ],
+            isError: true,
+          };
+        }
       }
 
       default:
