@@ -21,22 +21,26 @@ Node.js server implementing Model Context Protocol (MCP) for filesystem operatio
 ### Tools
 
 - **read_file**
+
   - Read complete contents of a file
   - Input: `path` (string)
   - Reads complete file contents with UTF-8 encoding
 
 - **read_multiple_files**
+
   - Read multiple files simultaneously
   - Input: `paths` (string[])
   - Failed reads won't stop the entire operation
 
 - **write_file**
+
   - Create new file or overwrite existing (exercise caution with this)
   - Inputs:
     - `path` (string): File location
     - `content` (string): File content
 
 - **edit_file**
+
   - Make selective edits using advanced pattern matching and formatting
   - Features:
     - Line-based and multi-line content matching
@@ -61,16 +65,19 @@ Node.js server implementing Model Context Protocol (MCP) for filesystem operatio
   - Best Practice: Always use dryRun first to preview changes before applying them
 
 - **create_directory**
+
   - Create new directory or ensure it exists
   - Input: `path` (string)
   - Creates parent directories if needed
   - Succeeds silently if directory exists
 
 - **list_directory**
+
   - List directory contents with [FILE] or [DIR] prefixes
   - Input: `path` (string)
 
 - **move_file**
+
   - Move or rename files and directories
   - Inputs:
     - `source` (string)
@@ -78,6 +85,7 @@ Node.js server implementing Model Context Protocol (MCP) for filesystem operatio
   - Fails if destination exists
 
 - **search_files**
+
   - Recursively search for files/directories
   - Inputs:
     - `path` (string): Starting directory
@@ -87,6 +95,7 @@ Node.js server implementing Model Context Protocol (MCP) for filesystem operatio
   - Returns full paths to matches
 
 - **get_file_info**
+
   - Get detailed file/directory metadata
   - Input: `path` (string)
   - Returns:
@@ -104,11 +113,13 @@ Node.js server implementing Model Context Protocol (MCP) for filesystem operatio
     - Directories that this server can read/write from
 
 ## Usage with Claude Desktop
+
 Add this to your `claude_desktop_config.json`:
 
 Note: you can provide sandboxed directories to the server by mounting them to `/projects`. Adding the `ro` flag will make the directory readonly by the server.
 
 ### Docker
+
 Note: all directories must be mounted to `/projects` by default.
 
 ```json
@@ -120,9 +131,12 @@ Note: all directories must be mounted to `/projects` by default.
         "run",
         "-i",
         "--rm",
-        "--mount", "type=bind,src=/Users/username/Desktop,dst=/projects/Desktop",
-        "--mount", "type=bind,src=/path/to/other/allowed/dir,dst=/projects/other/allowed/dir,ro",
-        "--mount", "type=bind,src=/path/to/file.txt,dst=/projects/path/to/file.txt",
+        "--mount",
+        "type=bind,src=/Users/username/Desktop,dst=/projects/Desktop",
+        "--mount",
+        "type=bind,src=/path/to/other/allowed/dir,dst=/projects/other/allowed/dir,ro",
+        "--mount",
+        "type=bind,src=/path/to/file.txt,dst=/projects/path/to/file.txt",
         "mcp/filesystem",
         "/projects"
       ]
@@ -131,31 +145,76 @@ Note: all directories must be mounted to `/projects` by default.
 }
 ```
 
-### NPX
+### Podman
+
+To bind to a local `./sandbox` directory relative to your current working directory:
 
 ```json
 {
   "mcpServers": {
     "filesystem": {
-      "command": "npx",
+      "command": "podman",
       "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "/Users/username/Desktop",
-        "/path/to/other/allowed/dir"
+        "run",
+        "-i",
+        "--rm",
+        "--mount",
+        "type=bind,src=./sandbox,dst=/projects/sandbox",
+        "mcp/filesystem",
+        "/projects"
       ]
     }
   }
 }
 ```
 
+This will mount the `sandbox` directory from your current working directory to `/projects/sandbox` in the container, allowing the MCP server to access only files within that directory.
+
+### NPX
+
+Example: Using NPX with a Local Sandbox Directory
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "./sandbox"]
+    }
+  }
+}
+```
+
+This will allow the MCP server to access only files within the `./sandbox` directory relative to where Claude Desktop is launched.
+
 ## Build
 
-Docker build:
+Podman build:
 
 ```bash
-docker build -t mcp/filesystem -f src/filesystem/Dockerfile .
+podman build -t mcp/filesystem -f src/filesystem/Dockerfile .
 ```
+
+### Troubleshooting Build Issues
+
+If you encounter build errors, here are some common solutions:
+
+1. **TypeScript Compilation Errors**: The build might fail if TypeScript is removed before compilation. The Dockerfile has been updated to:
+
+   - First build the project with all dependencies installed
+   - Set `NODE_ENV=production` before installing production-only dependencies to skip the prepare script
+   - This prevents TypeScript compilation errors during the production install
+
+2. **Cache Issues**: If you're still having problems, try building without cache:
+
+   ```bash
+   podman build --no-cache -t mcp/filesystem -f src/filesystem/Dockerfile .
+   ```
+
+3. **Mount Issues**: If you encounter mount-related errors, you may need to enable the proper SELinux context:
+   ```bash
+   podman build --security-opt label=disable -t mcp/filesystem -f src/filesystem/Dockerfile .
+   ```
 
 ## License
 
