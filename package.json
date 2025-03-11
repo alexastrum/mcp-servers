@@ -17,6 +17,8 @@
     "watch": "pnpm -r run watch",
     "publish-all": "pnpm -r publish --access public",
     "link-all": "pnpm -r link",
+    "build:filesystem": "cd src/filesystem && podman build -t mcp-filesystem -f Dockerfile ../../",
+    "podman:filesystem": "podman run -d --name mcp-filesystem -v $(pwd)/src/filesystem/sandbox:/sandbox -p 3000:3000 mcp-filesystem",
     "test:filesystem": "cd src/genkit-client && npx tsc && node dist/examples/filesystem-ls.js"
   },
   "dependencies": {
